@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 
-from mcp.types import CallToolResult, TextContent
 import os
 import json
-import re
-import psutil
-from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -16,6 +12,7 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from mcp.types import CallToolResult
+from google import genai
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -30,13 +27,16 @@ load_dotenv()
 # Configuration
 PORT = os.getenv("NLP_CLIENT_PORT", "8006")
 server_session = None
+tools = []
 server_params = StdioServerParameters(command="python", args=["server/tuya_server.py"])
 SERVER_TIMEOUT = 30
 
-# Global server session
-server_lock = asyncio.Lock()
 
-# Device mappings with aliases
+# Configure Gemini
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY)
+model = "gemini-2.5-flash-preview-04-17"
+
 DEVICE_MAPPINGS = {
     "quarto": {
         "id": "eb43453d39775b28a7vnsh",
@@ -56,129 +56,42 @@ DEVICE_MAPPINGS = {
     }
 }
 
-class CommandRequest(BaseModel):
-    command: str
 
-def parse_natural_command(command: str):
-    """Parse natural language command into device commands"""
-    commands = []
-    command = command.lower()
-    
-    # Extract brightness if present
-    brightness = None
-    brightness_match = re.search(r'(\d+)\s*(?:percent|%)', command)
-    if brightness_match:
-        brightness = int(brightness_match.group(1))
-        command = command.replace(brightness_match.group(0), '')
 
-    # Determine the action
-    action = None
-    if any(word in command for word in ['on', 'turn on', 'switch on', 'enable']):
-        action = 'on'
-    elif any(word in command for word in ['off', 'turn off', 'switch off', 'disable']):
-        action = 'off'
-    elif 'set' in command or 'brightness' in command:
-        action = 'set'
+def ask_gemini_for_tool(user_input, tools):
+    prompt = f"""
+You are a home automation assistant that can call any MCP tool. The available tools are:
+{json.dumps(tools, indent=2)}
 
-    # Find matching devices
-    for device_name, device_info in DEVICE_MAPPINGS.items():
-        if any(alias in command for alias in device_info['aliases']):
-            commands.append({
-                "device_id": device_info['id'],
-                "command": action or 'on',  # Default to 'on' if no action specified
-                "brightness": brightness
-            })
+If it's about lighting, you should use these devices:
+{json.dumps(DEVICE_MAPPINGS, indent=2)}
 
-    return commands
+Given the user's request, output a JSON object with:
+- tool: the tool name to use
+- arguments: a dictionary of arguments for the tool
 
-def find_server_process():
-    """Find existing tuya_server.py process"""
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            if 'python' in proc.info['name'].lower():
-                cmdline = proc.info.get('cmdline', [])
-                if any('tuya_server.py' in cmd for cmd in cmdline):
-                    return proc.info['pid']
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return None
+Example:
+{{
+  "tool": "control_light",
+  "arguments": {{"device_id": "living_room", "command": "on", "brightness": 50}}
+}}
 
-def kill_server_process(pid):
-    """Kill the server process with the given PID"""
+User request: {user_input}
+JSON:
+"""
+    response = client.models.generate_content(contents=[prompt], model=model)
+    # Extract the JSON from the response
     try:
-        if pid:
-            proc = psutil.Process(pid)
-            logger.info(f"Terminating existing server process (PID: {pid})")
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)  # Wait up to 5 seconds for graceful termination
-            except psutil.TimeoutExpired:
-                logger.warning(f"Server process did not terminate gracefully, killing it (PID: {pid})")
-                proc.kill()
-            return True
-    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-        logger.warning(f"Error terminating server process (PID: {pid}): {e}")
-    return False
-
-
-async def send_command(command: str) -> Dict[str, Any]:
-    """Send a command to the Tuya MCP server"""
-    global server_session
-    
-    if server_session is None:
-        return {"status": "error", "message": "Server session not initialized"}
-    
-    try:
-        async with asyncio.timeout(SERVER_TIMEOUT):
-            # Parse the natural language command
-            device_commands = parse_natural_command(command)
-            if not device_commands:
-                return {"status": "error", "message": "No matching devices found in command"}
-
-            results = []
-            
-            # Process each device command
-            for cmd in device_commands:
-                try:
-                    result: CallToolResult = await server_session.call_tool(
-                        "control_light",
-                        arguments={
-                            "device_id": cmd["device_id"],
-                            "command": cmd["command"],
-                            "brightness": cmd.get("brightness")
-                        }
-                    )
-                    # Handle the result
-                    result_dict = json.loads(result.content[0].text) if isinstance(result.content[0], TextContent) else {}
-                except Exception as e:
-                    logger.error(f"Error executing command: {str(e)}")
-                    result_dict = {
-                        "status": "error",
-                        "message": f"Failed to execute command: {str(e)}"
-                    }
-                results.append(result_dict)
-
-            # Check if any commands failed
-            print(f"Results: {results}")
-            failed_commands = [r for r in results if r["status"] == "error"]
-            if failed_commands:
-                return {
-                    "status": "error",
-                    "message": "Some commands failed",
-                    "results": results
-                }
-
-            return {
-                "status": "success",
-                "message": "Commands executed successfully",
-                "results": results
-            }
-    except asyncio.TimeoutError:
-        logger.error("Command execution timed out")
-        return {"status": "error", "message": "Command execution timed out"}
+        if not response.text:
+            return None
+        start = response.text.find('{')
+        end = response.text.rfind('}') + 1
+        json_str = response.text[start:end]
+        return json.loads(json_str)
     except Exception as e:
-        logger.error(f"Error in send_command: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        print("Failed to parse Gemini output as JSON:", e)
+        print("Gemini output was:", response.text)
+        return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -190,7 +103,30 @@ async def lifespan(app: FastAPI):
             global server_session
             await session.initialize()
             server_session = session
+            tools_result = await session.list_tools()
+            global tools
+            for tool in tools_result.tools:
+                tools.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.inputSchema
+                })
             yield
+
+async def call_mcp_tool(tool_name, arguments):
+    if server_session is None:
+        return {"status": "error", "message": "Server session not initialized"}
+    result: CallToolResult = await server_session.call_tool(tool_name, arguments=arguments)
+    from mcp.types import TextContent
+    content0 = result.content[0]
+    if isinstance(content0, TextContent):
+        return content0.text
+    return str(content0)
+
+# Global server session
+server_lock = asyncio.Lock()
+class CommandRequest(BaseModel):
+    command: str
 
 # Create FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
@@ -199,9 +135,18 @@ app = FastAPI(lifespan=lifespan)
 async def process_command(request: CommandRequest):
     """Process a natural language command"""
     try:
-        result = await send_command(request.command)
+        gemini_result = ask_gemini_for_tool(request.command, tools)
+        if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
+            print("Could not parse tool/arguments from Gemini.")
+            raise HTTPException(status_code=400, detail="Could not parse tool/arguments from Gemini.")
+        
+        tool_name = gemini_result["tool"]
+        arguments = gemini_result["arguments"]
+        mcp_result = await call_mcp_tool(tool_name, arguments)
+        if isinstance(mcp_result, str):
+            result = json.loads(mcp_result)
         if result["status"] == "error":
-            raise HTTPException(status_code=400, detail=result["message"])
+            return result["status"]
         return result["status"]
     except Exception as e:
         logger.error(f"Error processing command: {str(e)}")
