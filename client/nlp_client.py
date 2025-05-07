@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, TextContent
 import os
 import json
 import re
@@ -149,7 +149,7 @@ async def send_command(command: str) -> Dict[str, Any]:
                         }
                     )
                     # Handle the result
-                    result_dict = json.loads(result.content[0].text)
+                    result_dict = json.loads(result.content[0].text) if isinstance(result.content[0], TextContent) else {}
                 except Exception as e:
                     logger.error(f"Error executing command: {str(e)}")
                     result_dict = {
