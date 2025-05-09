@@ -18,6 +18,25 @@ mcp = FastMCP("tuya_server")
 TUYA_SERVICE_URL = f"http://localhost:{os.getenv('PORT', '8005')}"
 TIMEOUT = 30  # seconds
 
+DEVICE_MAPPINGS = {
+    "quarto": {
+        "id": "eb43453d39775b28a7vnsh",
+        "aliases": ["quarto", "bedroom", "room", "bed room", "bed-room"]
+    },
+    "sala": {
+        "id": "eb585e7b9c3a346ab4mcwb_1",
+        "aliases": ["sala", "living room", "livingroom", "living-room", "lounge"]
+    },
+    "porta": {
+        "id": "eb585e7b9c3a346ab4mcwb_2",
+        "aliases": ["porta", "door", "entrance"]
+    },
+    "backlight": {
+        "id": "eb585e7b9c3a346ab4mcwb_16",
+        "aliases": ["backlight", "back light", "back-light", "ambient"]
+    }
+}
+
 async def check_service_availability():
     """Check if the Tuya service is available"""
     try:
@@ -77,6 +96,11 @@ async def list_devices() -> Dict[str, Any]:
         return {"status": "error", "message": "Request timed out"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+async def get_device_mappings() -> Dict[str, Any]:
+    """Get the mapping of device names to their IDs and aliases"""
+    return {"status": "success", "mappings": DEVICE_MAPPINGS}
 
 @mcp.prompt()
 def device_control_help() -> str:

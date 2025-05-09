@@ -16,7 +16,7 @@ from google import genai
 
 # Configure logging with more detailed format
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for more detailed logs
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -37,50 +37,47 @@ GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 model = "gemini-2.5-flash-preview-04-17"
 
-DEVICE_MAPPINGS = {
-    "quarto": {
-        "id": "eb43453d39775b28a7vnsh",
-        "aliases": ["quarto", "bedroom", "room", "bed room", "bed-room"]
-    },
-    "sala": {
-        "id": "eb585e7b9c3a346ab4mcwb_1",
-        "aliases": ["sala", "living room", "livingroom", "living-room", "lounge"]
-    },
-    "porta": {
-        "id": "eb585e7b9c3a346ab4mcwb_2",
-        "aliases": ["porta", "door", "entrance"]
-    },
-    "backlight": {
-        "id": "eb585e7b9c3a346ab4mcwb_16",
-        "aliases": ["backlight", "back light", "back-light", "ambient"]
-    }
-}
-
-
-
-def ask_gemini_for_tool(user_input, tools):
+def ask_gemini_for_tool(user_input, tools, device_mappings=None):
     prompt = f"""
 You are a home automation assistant that can call any MCP tool. The available tools are:
 {json.dumps(tools, indent=2)}
 
-If it's about lighting, you should use these devices:
-{json.dumps(DEVICE_MAPPINGS, indent=2)}
+Given the user's request, you must follow these rules:
 
-Given the user's request, output a JSON object with:
-- tool: the tool name to use
-- arguments: a dictionary of arguments for the tool
+1. For light control requests (on/off/dim), you MUST follow this exact two-step process:
+   a. First call: {{"tool": "get_device_mappings", "arguments": {{}}}}
+   b. Second call: {{"tool": "control_light", "arguments": {{"device_id": "device_id_from_mappings", "command": "on/off"}}}}
 
-Example:
-{{
-  "tool": "control_light",
-  "arguments": {{"device_id": "living_room", "command": "on", "brightness": 50}}
-}}
+2. For other requests, use the appropriate tool directly.
 
-User request: {user_input}
-JSON:
+Examples:
+1. For "turn off living room light":
+   First response: {{"tool": "get_device_mappings", "arguments": {{}}}}
+   Second response: {{"tool": "control_light", "arguments": {{"device_id": "eb585e7b9c3a346ab4mcwb_1", "command": "off"}}}}
+
+2. For "turn on bedroom light":
+   First response: {{"tool": "get_device_mappings", "arguments": {{}}}}
+   Second response: {{"tool": "control_light", "arguments": {{"device_id": "eb43453d39775b28a7vnsh", "command": "on"}}}}
+
+3. For "list devices":
+   Response: {{"tool": "list_devices", "arguments": {{}}}}
 """
+
+    if device_mappings:
+        prompt += f"""
+IMPORTANT: You have just received the device mappings. Now you MUST use the control_light tool with the appropriate device ID.
+Available device mappings:
+{json.dumps(device_mappings, indent=2)}
+
+For the living room light, use device_id: {device_mappings['sala']['id']}
+For the bedroom light, use device_id: {device_mappings['quarto']['id']}
+For the door light, use device_id: {device_mappings['porta']['id']}
+For the backlight, use device_id: {device_mappings['backlight']['id']}
+"""
+
+    prompt += f"\nUser request: {user_input}\nJSON:"
+    
     response = client.models.generate_content(contents=[prompt], model=model)
-    # Extract the JSON from the response
     try:
         if not response.text:
             return None
@@ -89,8 +86,7 @@ JSON:
         json_str = response.text[start:end]
         return json.loads(json_str)
     except Exception as e:
-        print("Failed to parse Gemini output as JSON:", e)
-        print("Gemini output was:", response.text)
+        logger.error(f"Failed to parse Gemini output: {e}")
         return None
 
 @asynccontextmanager
@@ -135,19 +131,43 @@ app = FastAPI(lifespan=lifespan)
 async def process_command(request: CommandRequest):
     """Process a natural language command"""
     try:
+        # First, get the initial tool call from Gemini
         gemini_result = ask_gemini_for_tool(request.command, tools)
         if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
-            print("Could not parse tool/arguments from Gemini.")
-            raise HTTPException(status_code=400, detail="Could not parse tool/arguments from Gemini.")
+            raise HTTPException(status_code=400, detail="Could not parse tool/arguments from Gemini")
         
+        # Store device mappings if we get them
+        device_mappings = None
+        
+        # Process the first tool call
         tool_name = gemini_result["tool"]
         arguments = gemini_result["arguments"]
         mcp_result = await call_mcp_tool(tool_name, arguments)
+        
+        # If this was a get_device_mappings call, store the mappings and make the control_light call
+        if tool_name == "get_device_mappings":
+            if isinstance(mcp_result, str):
+                result = json.loads(mcp_result)
+            else:
+                result = mcp_result
+                
+            if result["status"] == "success":
+                device_mappings = result["mappings"]
+                
+                # Now get the next tool call from Gemini with the mappings
+                gemini_result = ask_gemini_for_tool(request.command, tools, device_mappings)
+                
+                if gemini_result and "tool" in gemini_result and "arguments" in gemini_result:
+                    tool_name = gemini_result["tool"]
+                    arguments = gemini_result["arguments"]
+                    mcp_result = await call_mcp_tool(tool_name, arguments)
+        
         if isinstance(mcp_result, str):
             result = json.loads(mcp_result)
-        if result["status"] == "error":
-            return result["status"]
-        return result["status"]
+        else:
+            result = mcp_result
+            
+        return result
     except Exception as e:
         logger.error(f"Error processing command: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
