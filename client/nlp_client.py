@@ -35,11 +35,14 @@ SERVER_TIMEOUT = 30
 # Configure Gemini
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
-model = "gemini-2.5-flash-preview-04-17"
+model = "gemini-2.0-flash"
 
-def ask_gemini_for_tool(user_input, tools, device_mappings=None):
-    prompt = f"""
-You are a home automation assistant that can call any MCP tool. The available tools are:
+def ask_gemini_for_tool(user_input, tools, device_mappings=None, command_count=0, conversation_history=None):
+    if conversation_history is None:
+        conversation_history = []
+        
+    # Start with the initial prompt
+    prompt = f"""You are a home automation assistant that can call any MCP tool. The available tools are:
 {json.dumps(tools, indent=2)}
 
 Given the user's request, you must follow these rules:
@@ -50,32 +53,36 @@ Given the user's request, you must follow these rules:
 
 2. For other requests, use the appropriate tool directly.
 
-Examples:
-1. For "turn off living room light":
-   First response: {{"tool": "get_device_mappings", "arguments": {{}}}}
-   Second response: {{"tool": "control_light", "arguments": {{"device_id": "eb585e7b9c3a346ab4mcwb_1", "command": "off"}}}}
+3. You can handle multiple commands in a single request. For each command:
+   - If it's a light control command, follow the two-step process
+   - If it's another type of command, use the appropriate tool directly
 
-2. For "turn on bedroom light":
-   First response: {{"tool": "get_device_mappings", "arguments": {{}}}}
-   Second response: {{"tool": "control_light", "arguments": {{"device_id": "eb43453d39775b28a7vnsh", "command": "on"}}}}
+4. CRITICAL: After processing ALL commands in the user's request, you MUST return {{"tool": "done", "arguments": {{}}}} to signal completion.
+   - Do NOT make any more tool calls after returning "done"
+   - Do NOT make any tool calls if you've already processed all commands
+   - Do NOT make any tool calls if you've already returned "done"
 
-3. For "list devices":
-   Response: {{"tool": "list_devices", "arguments": {{}}}}
+Let's start with the user's request:
+Human: {user_input}
 """
 
+    # Add conversation history
+    for entry in conversation_history:
+        if entry["role"] == "assistant":
+            prompt += f"\nAssistant: {json.dumps(entry['content'])}"
+        else:
+            prompt += f"\nSystem: {json.dumps(entry['content'])}"
+
+    # Add device mappings if available
     if device_mappings:
         prompt += f"""
-IMPORTANT: You have just received the device mappings. Now you MUST use the control_light tool with the appropriate device ID.
-Available device mappings:
+System: Here are the device mappings you requested:
 {json.dumps(device_mappings, indent=2)}
 
-For the living room light, use device_id: {device_mappings['sala']['id']}
-For the bedroom light, use device_id: {device_mappings['quarto']['id']}
-For the door light, use device_id: {device_mappings['porta']['id']}
-For the backlight, use device_id: {device_mappings['backlight']['id']}
+Please use these mappings to control the lights.
 """
 
-    prompt += f"\nUser request: {user_input}\nJSON:"
+    prompt += "\nAssistant:"
     
     response = client.models.generate_content(contents=[prompt], model=model)
     try:
@@ -131,18 +138,36 @@ app = FastAPI(lifespan=lifespan)
 async def process_command(request: CommandRequest):
     """Process a natural language command"""
     try:
+        conversation_history = []
+        
         # First, get the initial tool call from Gemini
-        gemini_result = ask_gemini_for_tool(request.command, tools)
+        gemini_result = ask_gemini_for_tool(request.command, tools, conversation_history=conversation_history)
         if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
             raise HTTPException(status_code=400, detail="Could not parse tool/arguments from Gemini")
         
         # Store device mappings if we get them
         device_mappings = None
+        results = []
+        command_count = 0
+        MAX_COMMANDS = 10  # Safety limit
         
         # Process the first tool call
         tool_name = gemini_result["tool"]
         arguments = gemini_result["arguments"]
         mcp_result = await call_mcp_tool(tool_name, arguments)
+        
+        # Add the tool call and its result to conversation history
+        conversation_history.append({
+            "role": "assistant",
+            "content": {"tool": tool_name, "arguments": arguments}
+        })
+        conversation_history.append({
+            "role": "system",
+            "content": mcp_result
+        })
+        
+        results.append(mcp_result)
+        command_count += 1
         
         # If this was a get_device_mappings call, store the mappings and make the control_light call
         if tool_name == "get_device_mappings":
@@ -155,19 +180,47 @@ async def process_command(request: CommandRequest):
                 device_mappings = result["mappings"]
                 
                 # Now get the next tool call from Gemini with the mappings
-                gemini_result = ask_gemini_for_tool(request.command, tools, device_mappings)
-                
-                if gemini_result and "tool" in gemini_result and "arguments" in gemini_result:
+                while command_count < MAX_COMMANDS:
+                    gemini_result = ask_gemini_for_tool(
+                        request.command, 
+                        tools, 
+                        device_mappings, 
+                        command_count,
+                        conversation_history
+                    )
+                    logger.info(f"Command {command_count}: {gemini_result}")
+                    
+                    if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
+                        break
+                        
                     tool_name = gemini_result["tool"]
+                    if tool_name == "done":
+                        break
+                        
                     arguments = gemini_result["arguments"]
                     mcp_result = await call_mcp_tool(tool_name, arguments)
+                    
+                    # Add the tool call and its result to conversation history
+                    conversation_history.append({
+                        "role": "assistant",
+                        "content": {"tool": tool_name, "arguments": arguments}
+                    })
+                    conversation_history.append({
+                        "role": "system",
+                        "content": mcp_result
+                    })
+                    
+                    results.append(mcp_result)
+                    command_count += 1
+                    
+                    # If we've hit the command limit, force a "done" response
+                    if command_count >= MAX_COMMANDS:
+                        break
         
-        if isinstance(mcp_result, str):
-            result = json.loads(mcp_result)
-        else:
-            result = mcp_result
-            
-        return result
+        # Return the last result or all results if there were multiple
+        if len(results) > 1:
+            return {"status": "success", "results": results}
+        return results[-1] if results else {"status": "error", "message": "No results"}
     except Exception as e:
         logger.error(f"Error processing command: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
