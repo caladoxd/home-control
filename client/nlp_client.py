@@ -14,7 +14,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from mcp.types import CallToolResult
 from google import genai
-from typing import TypedDict, List, Dict
+from typing import NotRequired, TypedDict, List, Dict
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -26,9 +26,11 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+
 class ServerParams(TypedDict):
     command: str
     args: List[str]
+    env: NotRequired[Dict[str, str]]
 
 # Configuration
 PORT = os.getenv("NLP_CLIENT_PORT", "8006")
@@ -42,6 +44,14 @@ server_params: Dict[str, ServerParams] = {
     "browsermcp": {
         "command": "npx",
         "args": ["@browsermcp/mcp@latest"]
+    },
+    "websearch": {
+        "command": "npx",
+        "args": ["websearch-mcp"],
+        "env": {
+            "API_URL": "http://localhost:3001",
+            "MAX_SEARCH_RESULT": "5" 
+        }
     }
 }
 
@@ -122,21 +132,21 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for FastAPI app"""
     # Startup
     logger.info("Starting application lifespan...")
-    
+
     async with contextlib.AsyncExitStack() as stack:
         # First create all stdio clients
         stdio_pairs = {}
         for name, params in server_params.items():
             stdio_client_ctx = stdio_client(StdioServerParameters(**params))
             stdio_pairs[name] = await stack.enter_async_context(stdio_client_ctx)
-        
+
         for name, (read, write) in stdio_pairs.items():
             session_ctx = ClientSession(read, write)
             session = await stack.enter_async_context(session_ctx)
             await session.initialize()
             server_sessions[name] = session
             tools_result = await session.list_tools()
-            
+
             global tools
             # Add Tuya tools
             for tool in tools_result.tools:
@@ -147,12 +157,13 @@ async def lifespan(app: FastAPI):
                 })
         yield
 
+
 async def call_mcp_tool(tool_name, arguments):
     print(tool_name)
     if server_sessions is None:
         return {"status": "error", "message": "Server session not initialized"}
     if tool_name == "done":
-        return {"status": "success", "result": arguments["message"]}
+        return json.dumps({"status": "success", "arguments": arguments})
     server_name = tool_name.split("/")[0]
     tool = tool_name.split("/")[1]
     result: CallToolResult = await server_sessions[server_name].call_tool(tool, arguments=arguments)
@@ -179,6 +190,7 @@ async def process_command(request: CommandRequest):
     """Process a natural language command"""
     try:
         conversation_history = []
+        logger.info(f"Processing command: {request.command}")
 
         # First, get the initial tool call from Gemini
         gemini_result = ask_gemini_for_tool(
@@ -211,58 +223,55 @@ async def process_command(request: CommandRequest):
 
         results.append(mcp_result)
         command_count += 1
+        if isinstance(mcp_result, str):
+            result = json.loads(mcp_result)
+        else:
+            result = mcp_result
 
         # If this was a get_device_mappings call, store the mappings and make
         # the control_light call
         if tool_name == "tuya/get_device_mappings":
-            if isinstance(mcp_result, str):
-                result = json.loads(mcp_result)
-            else:
-                result = mcp_result
-
             if result["status"] == "success":
                 device_mappings = result["mappings"]
 
                 # Now get the next tool call from Gemini with the mappings
-                while command_count < MAX_COMMANDS:
-                    gemini_result = ask_gemini_for_tool(
-                        request.command,
-                        tools,
-                        device_mappings,
-                        command_count,
-                        conversation_history
-                    )
-                    logger.info(f"Command {command_count}: {gemini_result}")
+        while command_count < MAX_COMMANDS:
+            gemini_result = ask_gemini_for_tool(
+                request.command,
+                tools,
+                device_mappings,
+                command_count,
+                conversation_history
+            )
+            logger.info(f"Command {command_count}: {gemini_result}")
 
-                    if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
-                        break
+            if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
+                break
 
-                    tool_name = gemini_result["tool"]
-                    if tool_name == "done":
-                        break
+            tool_name = gemini_result["tool"]
 
-                    arguments = gemini_result["arguments"]
-                    mcp_result = await call_mcp_tool(tool_name, arguments)
+            arguments = gemini_result["arguments"]
+            mcp_result = await call_mcp_tool(tool_name, arguments)
 
-                    # Add the tool call and its result to conversation history
-                    conversation_history.append({
-                        "role": "assistant",
-                        "content": {"tool": tool_name, "arguments": arguments}
-                    })
-                    conversation_history.append({
-                        "role": "system",
-                        "content": mcp_result
-                    })
+            # Add the tool call and its result to conversation history
+            conversation_history.append({
+                "role": "assistant",
+                "content": {"tool": tool_name, "arguments": arguments}
+            })
+            conversation_history.append({
+                "role": "system",
+                "content": mcp_result
+            })
 
-                    results.append(mcp_result)
-                    command_count += 1
+            results.append(mcp_result)
+            command_count += 1
 
-                    # If we've hit the command limit, force a "done" response
-                    if command_count >= MAX_COMMANDS:
-                        break
+            # If we've hit the command limit, force a "done" response
+            if command_count >= MAX_COMMANDS or tool_name == "done":
+                break
 
         # Return the last result
-        return {"status": "success", "message": results[-1]["arguments"]["message"]} if results else {
+        return {"status": "success", "message": json.loads(results[-1])["arguments"]["message"]} if results else {
             "status": "error", "message": "No results"}
     except Exception as e:
         logger.error(f"Error processing command: {str(e)}")
