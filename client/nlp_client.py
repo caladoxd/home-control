@@ -192,50 +192,14 @@ async def process_command(request: CommandRequest):
         conversation_history = []
         logger.info(f"Processing command: {request.command}")
 
-        # First, get the initial tool call from Gemini
-        gemini_result = ask_gemini_for_tool(
-            request.command, tools, conversation_history=conversation_history)
-        if not gemini_result or "tool" not in gemini_result or "arguments" not in gemini_result:
-            raise HTTPException(
-                status_code=400,
-                detail="Could not parse tool/arguments from Gemini")
-
         # Store device mappings if we get them
         device_mappings = None
         results = []
         command_count = 0
         MAX_COMMANDS = 10  # Safety limit
 
-        # Process the first tool call
-        tool_name = gemini_result["tool"]
-        arguments = gemini_result["arguments"]
-        mcp_result = await call_mcp_tool(tool_name, arguments)
-
-        # Add the tool call and its result to conversation history
-        conversation_history.append({
-            "role": "assistant",
-            "content": {"tool": tool_name, "arguments": arguments}
-        })
-        conversation_history.append({
-            "role": "system",
-            "content": mcp_result
-        })
-
-        results.append(mcp_result)
-        command_count += 1
-        if isinstance(mcp_result, str):
-            result = json.loads(mcp_result)
-        else:
-            result = mcp_result
-
-        # If this was a get_device_mappings call, store the mappings and make
-        # the control_light call
-        if tool_name == "tuya/get_device_mappings":
-            if result["status"] == "success":
-                device_mappings = result["mappings"]
-
-                # Now get the next tool call from Gemini with the mappings
         while command_count < MAX_COMMANDS:
+            # Get tool call from Gemini
             gemini_result = ask_gemini_for_tool(
                 request.command,
                 tools,
@@ -249,7 +213,6 @@ async def process_command(request: CommandRequest):
                 break
 
             tool_name = gemini_result["tool"]
-
             arguments = gemini_result["arguments"]
             mcp_result = await call_mcp_tool(tool_name, arguments)
 
@@ -266,7 +229,16 @@ async def process_command(request: CommandRequest):
             results.append(mcp_result)
             command_count += 1
 
-            # If we've hit the command limit, force a "done" response
+            # If this was a get_device_mappings call, store the mappings
+            if tool_name == "tuya/get_device_mappings":
+                if isinstance(mcp_result, str):
+                    result = json.loads(mcp_result)
+                else:
+                    result = mcp_result
+                if result["status"] == "success":
+                    device_mappings = result["mappings"]
+
+            # If we've hit the command limit or received done, break
             if command_count >= MAX_COMMANDS or tool_name == "done":
                 break
 
