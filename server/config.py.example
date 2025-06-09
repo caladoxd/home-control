@@ -1,0 +1,16 @@
+from typing import Dict, Any
+
+DEVICE_MAPPINGS: Dict[str, Dict[str, Any]] = {
+    "quarto": {
+        "id": "123",
+        "aliases": ["quarto", "bedroom", "room", "bed room", "bed-room"]
+    },
+    "sala": {
+        "id": "456",
+        "aliases": ["sala", "living room", "livingroom", "living-room", "lounge"]
+    },
+    "backlight": {
+        "id": "789",
+        "aliases": ["backlight", "back light", "back-light", "ambient"]
+    }
+} 

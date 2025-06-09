@@ -13,8 +13,7 @@ This project implements a Model Context Protocol system for controlling smart ho
 
 - Python 3.8+
 - Tuya Developer Account
-- iOS device with Siri
-- Shortcuts app (for Siri integration)
+- iOS device (Siri and Shortcuts app)
 
 ### Installation
 
@@ -23,24 +22,29 @@ This project implements a Model Context Protocol system for controlling smart ho
    ```bash
    pip install -r requirements.txt
    ```
-3. Configure your Tuya credentials in `config.yaml`
-4. Start the server:
-   ```bash
-   python server/main.py
-   ```
-5. Configure the client for Siri integration
+3. Configure credentials in `.env`
+5. Configure Siri integration
 
 ## Configuration
 
 1. Create a Tuya developer account and get your API credentials
-2. Update `config.yaml` with your Tuya credentials
-3. Configure Siri shortcuts to trigger the client application
+2. Get credentials from Gemini Studio
+3. Get credentials from Google Programmable Search Engine
+4. Update `.env` with your credentials
+5. Configure Siri shortcuts to trigger the client application (send HTTP request with command to your app's URL)
 
 ## Usage
 
-1. Start the server
-2. Use Siri to trigger commands through the client
-3. The server will process commands and control your Tuya devices
+1.  Start Tuya service:
+   ```bash
+   python server/tuya_service.py
+   ```
+2. Start client:
+   ```bash
+   python client/nlp_client.py
+   ```
+3. Use Siri to trigger commands through the client
+4. The server will process commands and control your devices
 
 ## Security
 
