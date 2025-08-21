@@ -41,7 +41,7 @@ This project implements a Model Context Protocol system for controlling smart ho
    ```
 2. Start client:
    ```bash
-   python client/nlp_client.py
+   python client/mcp_client.py
    ```
 3. Use Siri to trigger commands through the client
 4. The server will process commands and control your devices

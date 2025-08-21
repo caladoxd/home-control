@@ -33,7 +33,7 @@ class ServerParams(TypedDict):
     env: NotRequired[Dict[str, str]]
 
 # Configuration
-PORT = os.getenv("NLP_CLIENT_PORT", "8006")
+PORT = os.getenv("MCP_CLIENT_PORT", "8006")
 server_sessions = {}
 tools = []
 server_params: Dict[str, ServerParams] = {
