@@ -185,7 +185,7 @@ class CommandRequest(BaseModel):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.post("/command")
+@app.post("/")
 async def process_command(request: CommandRequest):
     """Process a natural language command"""
     try:
@@ -196,7 +196,7 @@ async def process_command(request: CommandRequest):
         device_mappings = None
         results = []
         command_count = 0
-        MAX_COMMANDS = 10  # Safety limit
+        MAX_COMMANDS = 50  # Safety limit
 
         while command_count < MAX_COMMANDS:
             # Get tool call from Gemini
