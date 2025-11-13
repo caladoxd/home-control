@@ -160,3 +160,6 @@ Temporary Items
 Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# Vector Database
+chroma_db/
