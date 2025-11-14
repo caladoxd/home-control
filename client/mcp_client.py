@@ -14,9 +14,11 @@ import asyncio
 from contextlib import asynccontextmanager
 from mcp.types import CallToolResult
 from google import genai
-from typing import NotRequired, TypedDict, List, Dict
+from typing import Any, NotRequired, TypedDict, List, Dict
+import chromadb
+from chromadb.utils import embedding_functions
 
-# Configure logging with more detailed format
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -25,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-
 
 class ServerParams(TypedDict):
     command: str
@@ -50,66 +51,108 @@ server_params: Dict[str, ServerParams] = {
         "args": ["websearch-mcp"],
         "env": {
             "API_URL": "http://localhost:3001",
-            "MAX_SEARCH_RESULT": "5" 
+            "MAX_SEARCH_RESULT": "5"
         }
     }
 }
 
-
-# Configure Gemini
+# Gemini setup
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
-model = "gemini-2.0-flash"
+model = "gemini-2.5-flash-lite"
+embedding_model = "gemini-embedding-001"
 
+# Initialize Chroma client and collection
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+collection = chroma_client.get_or_create_collection("conversation_memory")
+
+# Embedding helper using Gemini
+def embed_text(text: str) -> list[float]:
+    """Generate vector embedding for given text"""
+    if not text:
+        return []
+    try:
+        response = client.models.embed_content(model=embedding_model, contents=[text])
+        return response.embeddings[0].values or [] if response.embeddings else []
+    except Exception as e:
+        logger.error(f"Embedding error: {e}")
+        return []
+
+def store_conversation(user_input: str, llm_output: str):
+    """Store command/response pair in Chroma"""
+    try:
+        embedding = embed_text(user_input + llm_output)
+        # Skip storing if embedding is empty
+        if not embedding:
+            logger.warning("Skipping conversation storage: empty embedding")
+            return
+        
+        uid = f"conv_{hash(user_input + llm_output)}"
+        collection.add(
+            ids=[uid],
+            documents=[f"User: {user_input}\nAssistant: {llm_output}"],
+            embeddings=[embedding],
+        )
+        # logger.info("Conversation stored in memory.")
+    except Exception as e:
+        logger.error(f"Failed to store conversation: {e}")
+
+def retrieve_similar_conversations(query: str, n_results: int = 3):
+    """Retrieve the most similar past interactions"""
+    try:
+        query_vec = embed_text(query)
+        if not query_vec:
+            return []
+        results = collection.query(query_embeddings=[query_vec], n_results=n_results)
+        logger.info(f"Memory retrieval results: {results['documents']}")
+        return results["documents"][0] if results["documents"] else []
+    except Exception as e:
+        logger.error(f"Memory retrieval error: {e}")
+        return []
 
 def ask_gemini_for_tool(user_input, tools, device_mappings=None,
                         command_count=0, conversation_history=None):
     if conversation_history is None:
         conversation_history = []
 
-    # Start with the initial prompt
-    prompt = f"""You are a home automation assistant that can call any MCP tool. The available tools are:
+    # Retrieve similar memory
+    similar_contexts = retrieve_similar_conversations(user_input)
+    memory_context = "\n\n".join(similar_contexts) if similar_contexts else "None"
+
+    # Prompt with memory
+    prompt = f"""You are a home automation assistant that can call any MCP tool.
+The available tools are:
 {json.dumps(tools, indent=2)}
 
-Given the user's request, you must follow these rules:
+Relevant past memory:
+{memory_context}
 
-1. For light control requests (on/off/dim), you MUST follow this exact two-step process:
-   a. First call: {{"tool": "tuya/get_device_mappings", "arguments": {{}}}}
-   b. Second call: {{"tool": "tuya/control_light", "arguments": {{"device_id": "device_id_from_mappings", "command": "on/off"}}}}
+Given the user's request, follow these rules:
+
+0. Output format requirements (STRICT):
+   - You MUST return EXACTLY ONE JSON object and NOTHING ELSE.
+   - Do NOT return multiple JSON objects, do NOT return arrays, do NOT include prose or markdown.
+   - If multiple actions are needed, return ONLY the next action; you will be called again.
+   - JSON schema: {{"tool": "<server>/<tool_name>", "arguments": {{ ... }} }}
+
+1. For light control (on/off/dim), follow this exact two-step process:
+   a. {{"tool": "tuya/get_device_mappings", "arguments": {{}}}}
+   b. {{"tool": "tuya/control_light", "arguments": {{"device_id": "device_id_from_mappings", "command": "on/off"}}}}
 
 2. For other requests, use the appropriate tool directly.
+3. After all commands, return: {{"tool": "done", "arguments": {{"message": "message_to_user"}}}}.
 
-3. You can handle multiple commands in a single request. For each command:
-   - If it's a light control command, follow the two-step process
-   - If it's another type of command, use the appropriate tool directly
-   - Always use one tool call at a time.
-
-4. CRITICAL: After processing ALL commands in the user's request, you MUST return {{"tool": "done", "arguments": {{"message": "message_to_user"}}}} to signal completion.
-   - Do NOT make any more tool calls after returning "done"
-   - Do NOT make any tool calls if you've already processed all commands
-   - Do NOT make any tool calls if you've already returned "done"
-   - The message_to_user should be the final message to the user.
-   - If the request just requires information, set message_to_user to the answer.
-
-Let's start with the user's request:
-Human: {user_input}
+User: {user_input}
 """
 
-    # Add conversation history
+    # Add conversation history if any
     for entry in conversation_history:
-        if entry["role"] == "assistant":
-            prompt += f"\nAssistant: {json.dumps(entry['content'])}"
-        else:
-            prompt += f"\nSystem: {json.dumps(entry['content'])}"
+        role = entry["role"]
+        prompt += f"\n{role.capitalize()}: {json.dumps(entry['content'])}"
 
-    # Add device mappings if available
+    # Add device mappings if applicable
     if device_mappings:
-        prompt += f"""
-System: Here are the device mappings you requested:
-{json.dumps(device_mappings, indent=2)}
-
-Please use these mappings to control the lights.
-"""
+        prompt += f"\nSystem: Device mappings:\n{json.dumps(device_mappings, indent=2)}"
 
     prompt += "\nAssistant:"
 
@@ -117,24 +160,20 @@ Please use these mappings to control the lights.
     try:
         if not response.text:
             return None
-        start = response.text.find('{')
-        end = response.text.rfind('}') + 1
+        if isinstance(response, dict):
+            return response
+        start = response.text.find("{")
+        end = response.text.rfind("}") + 1
         json_str = response.text[start:end]
-        logger.info(f"Gemini output: {json_str}")
         return json.loads(json_str)
     except Exception as e:
-        logger.error(f"Failed to parse Gemini output: {e}")
-        return None
-
+        logger.error(f"Failed to parse Gemini output: {json_str}\n{e}")
+        raise e
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for FastAPI app"""
-    # Startup
     logger.info("Starting application lifespan...")
-
     async with contextlib.AsyncExitStack() as stack:
-        # First create all stdio clients
         stdio_pairs = {}
         for name, params in server_params.items():
             stdio_client_ctx = stdio_client(StdioServerParameters(**params))
@@ -148,18 +187,15 @@ async def lifespan(app: FastAPI):
             tools_result = await session.list_tools()
 
             global tools
-            # Add Tuya tools
             for tool in tools_result.tools:
                 tools.append({
                     "name": f"{name}/{tool.name}",
                     "description": tool.description,
-                    "inputSchema": tool.inputSchema
+                    "inputSchema": tool.inputSchema,
                 })
         yield
 
-
 async def call_mcp_tool(tool_name, arguments):
-    print(tool_name)
     if server_sessions is None:
         return {"status": "error", "message": "Server session not initialized"}
     if tool_name == "done":
@@ -173,17 +209,10 @@ async def call_mcp_tool(tool_name, arguments):
         return content0.text
     return str(content0)
 
-# Global server session
-server_lock = asyncio.Lock()
-
-
 class CommandRequest(BaseModel):
     command: str
 
-
-# Create FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
-
 
 @app.post("/")
 async def process_command(request: CommandRequest):
@@ -192,20 +221,14 @@ async def process_command(request: CommandRequest):
         conversation_history = []
         logger.info(f"Processing command: {request.command}")
 
-        # Store device mappings if we get them
         device_mappings = None
         results = []
         command_count = 0
-        MAX_COMMANDS = 50  # Safety limit
+        MAX_COMMANDS = 50
 
         while command_count < MAX_COMMANDS:
-            # Get tool call from Gemini
             gemini_result = ask_gemini_for_tool(
-                request.command,
-                tools,
-                device_mappings,
-                command_count,
-                conversation_history
+                request.command, tools, device_mappings, command_count, conversation_history
             )
             logger.info(f"Command {command_count}: {gemini_result}")
 
@@ -216,37 +239,29 @@ async def process_command(request: CommandRequest):
             arguments = gemini_result["arguments"]
             mcp_result = await call_mcp_tool(tool_name, arguments)
 
-            # Add the tool call and its result to conversation history
-            conversation_history.append({
-                "role": "assistant",
-                "content": {"tool": tool_name, "arguments": arguments}
-            })
-            conversation_history.append({
-                "role": "system",
-                "content": mcp_result
-            })
+            conversation_history.append({"role": "assistant", "content": {"tool": tool_name, "arguments": arguments}})
+            conversation_history.append({"role": "system", "content": mcp_result})
 
             results.append(mcp_result)
             command_count += 1
 
-            # If this was a get_device_mappings call, store the mappings
             if tool_name == "tuya/get_device_mappings":
-                if isinstance(mcp_result, str):
-                    result = json.loads(mcp_result)
-                else:
-                    result = mcp_result
-                if result["status"] == "success":
+                result = json.loads(mcp_result) if isinstance(mcp_result, str) else mcp_result
+                if result.get("status") == "success":
                     device_mappings = result["mappings"]
 
-            # If we've hit the command limit or received done, break
             if command_count >= MAX_COMMANDS or tool_name == "done":
                 break
 
-        # Return the last result
-        return {"status": "success", "message": json.loads(results[-1])["arguments"]["message"]} if results else {
-            "status": "error", "message": "No results"}
+        # Store conversation in memory
+        if results:
+            final_message = json.loads(results[-1])["arguments"]["message"]
+            store_conversation(request.command, final_message)
+            return {"status": "success", "message": final_message}
+        else:
+            return {"status": "error", "message": "No results"}
     except Exception as e:
-        logger.error(f"Error processing command: {str(e)}")
+        logger.error(f"Error processing command: {gemini_result} {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
