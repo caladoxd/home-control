@@ -15,10 +15,10 @@ concurrency:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: -staging
-  ECS_CLUSTER: -staging
-  ECS_SERVICE: staging-
-  CONTAINER_NAME: 
+  ECR_REPOSITORY: home-control-staging
+  ECS_CLUSTER: home-control-staging
+  ECS_SERVICE: staging-home-control
+  CONTAINER_NAME: home-control
 
 jobs:
   build-and-deploy:
@@ -56,7 +56,7 @@ jobs:
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition tsk-staging- \
+            --task-definition tsk-staging-home-control \
             --query taskDefinition > task-definition.json
 
       - name: Update task definition with new image
