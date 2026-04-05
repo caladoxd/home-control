@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build || echo "No build script defined, skipping build"
+RUN npm run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine
