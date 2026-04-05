@@ -17,8 +17,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY --from=build /app/package*.json ./
-RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+RUN npm ci --omit=dev --prefer-offline --no-audit
 
 EXPOSE 3000
 
