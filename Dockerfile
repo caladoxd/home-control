@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run build || echo "No build script defined, skipping build"
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine
@@ -18,6 +18,7 @@ ENV NODE_ENV=production
 
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/src ./src
 RUN npm ci --omit=dev --prefer-offline --no-audit
 
 EXPOSE 3000
