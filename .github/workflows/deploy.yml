@@ -48,10 +48,10 @@ jobs:
         env:
           IMAGE: ${{ format('{0}/{1}:{2}', steps.login-ecr.outputs.registry, env.ECR_REPOSITORY, steps.image-tag.outputs.tag) }}
         run: |
-          docker build -t $IMAGE .
-          docker push $IMAGE
-          docker tag $IMAGE ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker build -t $IMAGE . 2>&1
+          docker push $IMAGE 2>&1
+          docker tag $IMAGE ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest 2>&1
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest 2>&1
 
       - name: Download current task definition
         run: |
