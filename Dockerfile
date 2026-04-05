@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run build && ls -la dist/ || (echo "Build failed or dist/ not created" && exit 1)
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine
