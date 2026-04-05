@@ -3,9 +3,6 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Install build dependencies required for native modules
-RUN apk add --no-cache python3 make g++
-
 COPY package*.json ./
 RUN npm ci
 
@@ -18,9 +15,6 @@ FROM node:20-alpine
 WORKDIR /app
 
 ENV NODE_ENV=production
-
-# Install git for npm dependencies that may require git
-RUN apk add --no-cache git
 
 COPY --from=build /app/package*.json ./
 RUN npm ci --omit=dev
