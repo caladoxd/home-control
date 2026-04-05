@@ -2,10 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
-
 COPY . .
+
+RUN npm install --legacy-peer-deps
+
 RUN npm run build --if-present
 
 ENV NODE_ENV=production
