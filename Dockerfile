@@ -19,6 +19,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Install git for npm dependencies that may require git
+RUN apk add --no-cache git
+
 COPY --from=build /app/package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist

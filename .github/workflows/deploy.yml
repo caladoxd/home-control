@@ -19,7 +19,6 @@ env:
   ECS_CLUSTER: home-control-staging
   ECS_SERVICE: staging-home-control
   CONTAINER_NAME: home-control
-  TASK_DEFINITION: staging-home-control
 
 jobs:
   build-and-deploy:
@@ -57,7 +56,7 @@ jobs:
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition ${{ env.TASK_DEFINITION }} \
+            --task-definition tsk-staging-home-control \
             --query taskDefinition > task-definition.json
 
       - name: Update task definition with new image
