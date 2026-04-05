@@ -3,6 +3,9 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
+# Install build dependencies required for native modules
+RUN apk add --no-cache python3 make g++
+
 COPY package*.json ./
 RUN npm ci
 
