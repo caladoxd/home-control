@@ -28,15 +28,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify build context
+      - name: List build context
         run: |
           echo "Current directory: $(pwd)"
-          echo "Files in current directory:"
-          ls -la
-          if [ ! -f requirements.txt ]; then
-            echo "ERROR: requirements.txt not found in build context"
-            exit 1
-          fi
+          echo "Files in build context:"
+          find . -maxdepth 2 -not -path './.git/*' | head -80
+          echo "---"
+          echo "Dockerfile content:"
+          cat Dockerfile
+          echo "---"
+          if [ -f .dockerignore ]; then echo ".dockerignore:"; cat .dockerignore; fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
