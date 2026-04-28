@@ -84,5 +84,29 @@ jobs:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
-          wait-for-minutes: 10
+          wait-for-service-stability: false
+
+      - name: Check ECS service status
+        run: |
+          echo "Waiting for service to stabilize..."
+          for i in {1..60}; do
+            RUNNING=$(aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE }} \
+              --query 'services[0].runningCount' \
+              --output text)
+            DESIRED=$(aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE }} \
+              --query 'services[0].desiredCount' \
+              --output text)
+            echo "Attempt $i: Running=$RUNNING, Desired=$DESIRED"
+            if [ "$RUNNING" = "$DESIRED" ] && [ "$RUNNING" -gt 0 ]; then
+              echo "Service stabilized successfully"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Service failed to stabilize after 10 minutes"
+          aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }}
+          exit 1
