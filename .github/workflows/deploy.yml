@@ -69,6 +69,8 @@ jobs:
           aws ecs describe-task-definition \
             --task-definition tsk-staging-home-control \
             --query taskDefinition > task-definition.json
+          echo "Task definition retrieved:"
+          cat task-definition.json
 
       - name: Update task definition with new image
         id: task-def
@@ -86,27 +88,48 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: false
 
+      - name: Get service details before stability check
+        run: |
+          echo "=== Service Details ==="
+          aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --output json | jq '.services[0] | {desiredCount, runningCount, status, deployments}'
+          echo "=== Task Details ==="
+          aws ecs list-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.ECS_SERVICE }} \
+            --output json | jq '.taskArns[]' | head -5
+
       - name: Check ECS service status
         run: |
           echo "Waiting for service to stabilize..."
           for i in {1..60}; do
-            RUNNING=$(aws ecs describe-services \
+            SERVICE_JSON=$(aws ecs describe-services \
               --cluster ${{ env.ECS_CLUSTER }} \
               --services ${{ env.ECS_SERVICE }} \
-              --query 'services[0].runningCount' \
-              --output text)
-            DESIRED=$(aws ecs describe-services \
-              --cluster ${{ env.ECS_CLUSTER }} \
-              --services ${{ env.ECS_SERVICE }} \
-              --query 'services[0].desiredCount' \
-              --output text)
-            echo "Attempt $i: Running=$RUNNING, Desired=$DESIRED"
+              --output json)
+            RUNNING=$(echo "$SERVICE_JSON" | jq '.services[0].runningCount')
+            DESIRED=$(echo "$SERVICE_JSON" | jq '.services[0].desiredCount')
+            STATUS=$(echo "$SERVICE_JSON" | jq -r '.services[0].status')
+            DEPLOYMENT_COUNT=$(echo "$SERVICE_JSON" | jq '.services[0].deployments | length')
+            echo "Attempt $i: Running=$RUNNING, Desired=$DESIRED, Status=$STATUS, Deployments=$DEPLOYMENT_COUNT"
+            
             if [ "$RUNNING" = "$DESIRED" ] && [ "$RUNNING" -gt 0 ]; then
-              echo "Service stabilized successfully"
+              echo "✓ Service stabilized successfully"
               exit 0
+            fi
+            
+            if [ $i -eq 30 ] || [ $i -eq 60 ]; then
+              echo "--- Full service state at attempt $i ---"
+              aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} --output json | jq '.services[0]'
+              TASK_ARNS=$(aws ecs list-tasks --cluster ${{ env.ECS_CLUSTER }} --service-name ${{ env.ECS_SERVICE }} --output json | jq -r '.taskArns[]' | head -3)
+              if [ ! -z "$TASK_ARNS" ]; then
+                echo "--- Task details ---"
+                aws ecs describe-tasks --cluster ${{ env.ECS_CLUSTER }} --tasks $TASK_ARNS --output json | jq '.tasks[] | {taskArn, lastStatus, stopCode, stoppedReason}'
+              fi
             fi
             sleep 10
           done
-          echo "Service failed to stabilize after 10 minutes"
-          aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }}
+          echo "✗ Service failed to stabilize after 10 minutes"
           exit 1
