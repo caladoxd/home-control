@@ -24,6 +24,7 @@ jobs:
   build-and-deploy:
     name: Build, Push & Deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,13 +57,20 @@ jobs:
         run: echo "tag=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
+        timeout-minutes: 40
         env:
           IMAGE: ${{ format('{0}/{1}:{2}', steps.login-ecr.outputs.registry, env.ECR_REPOSITORY, steps.image-tag.outputs.tag) }}
         run: |
+          set -e
+          echo "Building Docker image: $IMAGE"
           docker build -t $IMAGE .
-          docker push $IMAGE
+          echo "Pushing image to ECR..."
+          docker push $IMAGE || (echo "First push attempt failed, retrying..." && sleep 10 && docker push $IMAGE)
+          echo "Tagging as latest..."
           docker tag $IMAGE ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          echo "Pushing latest tag..."
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest || (echo "Latest push attempt failed, retrying..." && sleep 10 && docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest)
+          echo "Push completed successfully"
 
       - name: Download current task definition
         run: |
