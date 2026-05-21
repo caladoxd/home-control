@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - staging
 
 permissions:
   contents: read
@@ -18,7 +18,6 @@ env:
   ECR_REPOSITORY: personal-staging
   ECS_CLUSTER: personal-staging
   ECS_SERVICE: staging-personal
-  ECS_TASK_DEFINITION: staging-personal
   CONTAINER_NAME: personal
 
 jobs:
@@ -68,7 +67,7 @@ jobs:
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+            --task-definition tsk-staging-personal \
             --query taskDefinition > task-definition.json
 
       - name: Update task definition with new image
