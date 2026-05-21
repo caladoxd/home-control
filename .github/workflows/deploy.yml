@@ -18,6 +18,7 @@ env:
   ECR_REPOSITORY: personal-staging
   ECS_CLUSTER: personal-staging
   ECS_SERVICE: staging-personal
+  ECS_TASK_DEFINITION: staging-personal
   CONTAINER_NAME: personal
 
 jobs:
@@ -67,7 +68,7 @@ jobs:
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition tsk-staging-personal \
+            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
             --query taskDefinition > task-definition.json
 
       - name: Update task definition with new image
