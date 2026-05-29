@@ -4,21 +4,21 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - staging
 
 permissions:
   contents: read
 
 concurrency:
   group: deploy-staging
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: test-staging
-  ECS_CLUSTER: test-staging
-  ECS_SERVICE: staging-test
-  CONTAINER_NAME: test
+  ECR_REPOSITORY: home-staging
+  ECS_CLUSTER: home-staging
+  ECS_SERVICE: staging-home
+  CONTAINER_NAME: home
 
 jobs:
   build-and-deploy:
@@ -67,7 +67,7 @@ jobs:
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition tsk-staging-test \
+            --task-definition tsk-staging-home \
             --query taskDefinition > task-definition.json
 
       - name: Update task definition with new image
